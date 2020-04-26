@@ -2,11 +2,16 @@ import re
 import argparse
 import os
 import numpy as np
+import scipy.sparse as sp
 from numpy import transpose as transp
-from scipy.special import softmax
+#from scipy.special import softmax
 from scipy.sparse import lil_matrix, csr_matrix, kron, eye
 from scipy.io import loadmat
-from keras.utils import to_categorical as OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder
+#from keras.utils import to_categorical as OneHotEncoder
+from numba import jit, cuda
+import matplotlib.pyplot as plt
+import pandas as pd
 
 parser = argparse.ArgumentParser(description = 'Assignment_3_DD2424_option_2')
 parser.add_argument('--training_updates', type = int, default = 2, metavar = 'N', help = '')
@@ -64,6 +69,11 @@ def createOneHot_X(names):
     X[:,id] = createOneHot_name(name, char_to_ind, 122, 28).flatten('F')
   return X
 
+def createOneHot_Y(labels):
+  onehot_encoder = OneHotEncoder(sparse=False, categories='auto')
+  Y = onehot_encoder.fit_transform(np.array(labels).reshape(-1,1)).astype(int)
+  return Y
+
 ####################################################################
 def DEBUG(F, n_len, X_input, d, k, nf):
     print('1. Debug Conv Filter')
@@ -90,13 +100,6 @@ def DEBUG(F, n_len, X_input, d, k, nf):
 #a,b = DEBUG(F, 4, X, 4, k, nf)
 ####################################################################
 
-# TODO
-def accuracy():
-    return 0
-
-# TODO
-def confusion_matrix():
-    return 0
 
 def MakeMFMatrix(F, n_len):
     """
@@ -145,17 +148,19 @@ def MakeMXMatrix(X_input, d, k, nf):
 
     mr2 = 0
     for mr in range(0, MX.shape[0], nf):
-        #MX[mr:mr+nf, :] = kron(I, csr_matrix( X_input[:,mr2 : mr2 + k].flatten('F'))).tolil()
-        MX[mr:mr + nf, :] = kron(I, csr_matrix(X_input[:, mr2: mr2 + k])).tolil()
+        MX[mr:mr+nf, :] = kron(I, csr_matrix( X_input[:,mr2 : mr2 + k].flatten('F'))).tolil()
+        #MX[mr:mr + nf, :] = kron(I, csr_matrix(X_input[:, mr2: mr2 + k])).tolil()
         mr2 += 1
     return MX
-
 
 def makeMFMatrix(F, n_len):
     (d, k, nf) = F.shape
     M_filter = lil_matrix(np.zeros(((n_len - k + 1) * nf, n_len * d)))
     Vec_filter = lil_matrix(F.reshape((d * k, nf), order='F').T)
     # print (F.shape, Vec_filter.shape, M_filter.shape)
+
+    #M_filter = np.zeros(((n_len - k + 1) * nf, n_len * d))
+    #Vec_filter = F.reshape((d * k, nf), order='F').T
 
     for i in range(n_len - k + 1):
         row_start = i * nf
@@ -166,23 +171,41 @@ def makeMFMatrix(F, n_len):
 
     return M_filter
 
-
-def makeMXMatrix(x_input, d, k, nf, stride=1):  # d,k,nf = size(F)
+def makeMXMatrix(x_input, d, k, nf):  # d,k,nf = size(F)
     n_len = int(len(x_input) / d)
     M_input = lil_matrix(np.zeros((nf * (n_len - k + 1), nf * d * k)))
     x_input = lil_matrix(x_input.reshape((d, n_len), order='F'))
 
+    #M_input = np.zeros((nf * (n_len - k + 1), nf * d * k))
+    #x_input = x_input.reshape((d, n_len), order='F')
+
     for i in range((n_len - k + 1)):
         row_start = i * nf
         vec = (x_input[:, i:k + i].reshape((d * k, 1), order='F')).T
-        # vec = x_input[i*d*stride: k*d*stride+i*d*stride]
         for j in range(nf):
             M_input[row_start + j, j * d * k: (j + 1) * d * k] = vec
 
     return M_input
 
+def softmax(s):
+    f = np.exp(s - np.max(s))  # avoiding nan for large numbers
+    return f / f.sum(axis=0)
+
+# TODO
+def accuracy():
+    return 0
+
+# TODO
+def confusion_matrix(P,X, MFs, W, y ):
+    pred = np.argmax(P, axis=0)
+    pred = [x + 1 for x in pred]
+    y_actu = pd.Series(y, name='Actual')
+    y_pred = pd.Series(pred, name='Predicted')
+    df_confusion = pd.crosstab(y_actu, y_pred,  margins=True)
+    display(df_confusion)
+
 class ConvNet:
-    def __init__(self, bs=10,  n1=2, k1=5, n2=2, k2=3,
+    def __init__(self, bs=10,  n1=20, k1=5, n2=20, k2=3,
                  eta = args.learning_rate, rho = args.momentum):
         self.bs = bs
 
@@ -203,40 +226,76 @@ class ConvNet:
         self.eta = eta
         self.rho = rho
 
-        self.F1 = np.zeros((self.d, self.k1, self.n1))
-        self.F2 = np.zeros((self.n1, self.k2, self.n2))
-        self.W = np.zeros((self.K, self.fsize))
+        # He_init
+        self.F1 = 1 * np.random.normal(size = self.d * self.n1 * self.k1).reshape(self.d, self.k1, self.n1)
+        self.F2 = 0.01 * np.random.normal(size = self.n1 * self.n2 * self.k2).reshape(self.n1, self.k2, self.n2)
+        self.W = 0.01 * np.random.normal(size = self.K * self.fsize).reshape(self.K, self.fsize)
 
         self.dL_dF1 = np.zeros((self.d, self.k1, self.n1))
         self.dL_dF2 = np.zeros((self.n1, self.k2, self.n2))
         self.dL_dW = np.zeros((self.K, self.fsize))
 
+        self.R1 = np.zeros((self.d, self.k1, self.n1))
+        self.R2 = np.zeros((self.n1, self.k2, self.n2))
+        self.RW = np.zeros((self.K, self.fsize))
+
     def apply_conv_layer(self, X, F, idx, n_len):
-        MF = makeMFMatrix(F, n_len)
-        X_deliv = np.maximum(0, MF.dot(X) )
-        for i in range(1, idx):
-            print(i)
-            tmp = np.maximum(0, MF.dot(X) )
-            X_deliv = np.hstack((X_deliv, tmp))
+        MF = csr_matrix(makeMFMatrix(F, n_len))
+        #MF = makeMFMatrix(F, n_len)
+        #print('dimensions must match')
+        #print(MF.shape)
+        #print(X.shape)
 
-        return X_deliv.T
+        #plt.spy(MF)
+        #plt.show()
 
-    def He_init(self, sig1=1, sig2=0.01, sig3=0.01): # recheck sig params
-        self.F1 = sig1 * np.random.normal(size = self.d * self.n1 * self.k1).reshape(self.d, self.k1, self.n1)
-        self.F2 = sig2 * np.random.normal(size = self.n1 * self.n2 * self.k2).reshape(self.n1, self.k2, self.n2)
-        self.W = sig3 * np.random.normal(size = self.K * self.fsize).reshape(self.K, self.fsize)
+        X_deliv = (MF.tocsr().dot(X.tocsr())).maximum(0)
+        #X_deliv = np.maximum(0,np.dot(MF,X))
+        #for i in range(1, idx):
+        #    print(i)
+        #    tmp = (MF.tocsr().dot(X.tocsr())).maximum(0)
+            #tmp = np.maximum(0,np.dot(MF,X))
+        #    plt.spy(tmp.toarray())
+        #    plt.show()
+        #    X_deliv = sp.hstack((X_deliv.tocsr(), tmp.tocsr())).tolil()
+            #X_deliv = np.hstack((X_deliv,tmp))
+            #plt.spy(X_deliv)
+            #plt.show()
+        return X_deliv
 
     def forward(self, X):
+        #print(X.shape)
+        #print(self.F1.shape)
         X1_batch = self.apply_conv_layer(X, F = self.F1, idx = self.n1, n_len = self.n_len)
-        print('forward debug:', X1_batch.shape)
-        print('forward debug:', self.F2.shape)
+        print('X1 plot')
+        #plt.spy(X1_batch)
+        #plt.show()
+        #print(X1_batch.shape)
+        #print(self.F2.shape)
         X2_batch = self.apply_conv_layer(X = X1_batch, F = self.F2, idx = self.n2, n_len = self.n_len1)
-        s_batch = np.matmul(self.W, X2_batch.flatten())
+        print('X2 plot')
+        #plt.spy(X2_batch)
+        #plt.show()
+
+        #s_batch = np.matmul(self.W, X2_batch.flatten())
+
+        print('debug dims')
+        print(self.W.shape)
+        print(X2_batch.shape)
+        s_batch = np.matmul(self.W, X2_batch.toarray())
+
+
+        #plt.spy(s_batch)
+        #plt.show()
         return softmax(s_batch), s_batch, X1_batch, X2_batch
 
     def grads(self,X,Y):
-
         P_batch, _, X1_batch, X2_batch = self.forward(X)
+
+        print('debug grads')
+        print(P_batch.shape)
+        print(Y.shape)
+
         G_batch = -(Y - P_batch)
         self.dL_dW = (1/self.bs) * np.matmul(G_batch, X2_batch.T)
         MF2 = MakeMFMatrix(F = self.F2, n_len = self.n_len2)
@@ -259,12 +318,13 @@ class ConvNet:
         self.dL_dF2 += (1 / Y.shape[0]) * v2
         self.dL_dF1 += (1 / Y.shape[0]) * v1
 
-    # TODO
     def backward(self):
-        # update weights here with momentum and eta
-
-
-        return 0
+        self.R1 = self.rho*self.R1 -self.eta*self.dL_dF1
+        self.R2 = self.rho*self.R2 -self.eta*self.dL_dF2
+        self.RW = self.rho*self.RW -self.eta*self.dL_dW
+        self.F1 += self.R1
+        self.F2 += self.R2
+        self.W += self.RW
 
     def ComputeLoss(self,X,Y):
         P_batch, _,_,_ = self.forward(X)
@@ -305,11 +365,17 @@ if __name__ == '__main__':
     char_to_ind = {val: id for id, val in enumerate(C)}
 
     ### Data
-    X_train = createOneHot_X(names_train)
-    X_val = createOneHot_X(names_val)
+    X_train = lil_matrix(createOneHot_X(names_train))
+    X_val = lil_matrix(createOneHot_X(names_val))
 
-    Ys_train = lil_matrix(OneHotEncoder(labels_train)).T
-    Ys_val = lil_matrix(OneHotEncoder(labels_val)).T
+    #Ys_train = lil_matrix(OneHotEncoder(labels_train)).T
+    #Ys_val = lil_matrix(OneHotEncoder(labels_val)).T
+
+    Ys_train = lil_matrix(createOneHot_Y(labels_train)).T
+    Ys_val = lil_matrix(createOneHot_Y(labels_val)).T
+
+    #X_train = createOneHot_X(names_train)
+    #X_val = createOneHot_X(names_val)
 
     #Ys_train = OneHotEncoder(labels_train).T
     #Ys_val = OneHotEncoder(labels_val).T
@@ -331,11 +397,14 @@ if __name__ == '__main__':
         print(' ')
         print('Epoch: ', e)
 
+        #plt.spy(X_train)
+        #plt.show()
+        #plt.spy(Ys_train)
+        #plt.show()
+
         print('check 1')
-        MODEL.He_init()
-        print('check 2')
         MODEL.forward(X=X_train)
-        print('check 3')
+        print('check 2')
         MODEL.grads(X=X_train,Y=Ys_train)
 
         print('debug grads')
