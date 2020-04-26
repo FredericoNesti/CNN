@@ -4,7 +4,7 @@ import os
 import numpy as np
 import scipy.sparse as sp
 from numpy import transpose as transp
-#from scipy.special import softmax
+from scipy.special import softmax
 from scipy.sparse import lil_matrix, csr_matrix, kron, eye
 from scipy.io import loadmat
 from sklearn.preprocessing import OneHotEncoder
@@ -21,6 +21,7 @@ parser.add_argument('--n1', type = int, default = 1, metavar = 'N', help = '')
 parser.add_argument('--n2', type = int, default = 1, metavar = 'N', help = '')
 parser.add_argument('--k1', type = int, default = 1, metavar = 'N', help = '')
 parser.add_argument('--k2', type = int, default = 1, metavar = 'N', help = '')
+parser.add_argument('--bs', type = int, default = 1, metavar = 'N', help = '')
 parser.add_argument('--direc', type = str, default = '/home/firedragon/Desktop/ACADEMIC/DD2424/A3/',
                     metavar = 'N', help = 'RAW DATABASE DIR')
 args = parser.parse_args()
@@ -48,7 +49,7 @@ def num_grads(self, X, Y, MF, h):
                     for m in [-1, 1]:
                         Fi_try = np.copy(self.F[i])
                         Fi_try[j, k, q] += m * h
-                        MFi_try = MakeMFMatrix(Fi_try, self.len_f[i])
+                        MFi_try = makeMFMatrix(Fi_try, self.len_f[i])
                         MF_lst = []
                         for ii in range(self.n_conv):
                             MF_lst.append(MFi_try if ii == i else MF[ii])
@@ -74,129 +75,38 @@ def createOneHot_Y(labels):
   Y = onehot_encoder.fit_transform(np.array(labels).reshape(-1,1)).astype(int)
   return Y
 
-####################################################################
-def DEBUG(F, n_len, X_input, d, k, nf):
-    print('1. Debug Conv Filter')
-    print('MF and MX dimensions must match:')
-    MF = MakeMFMatrix(F, n_len)
-    print('ok')
-    MX = MakeMXMatrix(X_input, d, k, nf)
-
-    print('MX shape', MX.shape)
-    print('MF shape', MF.shape)
-
-
-    return MX, MF
-
-#X = np.zeros((4,4))
-#f1 = np.zeros((4,2))
-#f2 = np.zeros((4,2))
-#F = np.stack((f1,f2))
-
-#print('F shape', F.shape)
-
-#k = F.shape[2]
-#nf = F.shape[0]
-#a,b = DEBUG(F, 4, X, 4, k, nf)
-####################################################################
-
-
-def MakeMFMatrix(F, n_len):
-    """
-    This function we use to compute the matrix formulation for the convolutional filter
-    This function is for the forward step
-    """
-    dd = F.shape[0]
-    k = F.shape[1]
-    nf = F.shape[2]
-    F_flat = F.reshape((dd * k, nf), order='F').T
-    #F_flat = F.flatten('F').flatten('F')
-    print(F_flat.shape)
-    #F_flat = F[:, :, 0].flatten('F')
-    #for f in range(1, nf):
-        #print(F_flat.shape)
-        #print(F[:,:,f].shape)
-        #F_flat = np.vstack((F_flat, F[:,:,f].flatten('F')))
-    #F_numel = F.shape[0]*F.shape[1]*F.shape[2]
-    MF_rows = (n_len - k + 1) * nf
-    MF_cols = dd * n_len
-    MF = lil_matrix(np.zeros((MF_rows, MF_cols)))
-    #for mr in range(0, MF_rows, nf):
-    #    MF[mr:mr+nf, :] = np.roll(
-    #        np.hstack((F_flat, np.zeros((F_flat.shape[0], MF_cols - F_numel)))), shift = mr*dd, axis=1)
+def makeMFMatrix(F, n_len):
+    (d, k, nf) = F.shape
+    M_filter = np.zeros(((n_len - k + 1) * nf, n_len * d))
+    Vec_filter = F.reshape((d * k, nf), order='F').T
     for i in range(n_len - k + 1):
-      row_start = i * nf
-      row_end = (i + 1) * nf
-      col_start = dd * i
-      col_end = dd * i + dd * k
-      MF[row_start:row_end,col_start:col_end] = F_flat
+        M_filter[i * nf : (i + 1) * nf, d * i : d * i + d * k] = Vec_filter
+    return M_filter
 
-    return MF
+def makeMXMatrix(X_input, d, k, nf):
 
-def MakeMXMatrix(X_input, d, k, nf):
-    """
-    This function is for the backward step
-    This function has to have the same dimension as MakeMFmatrix
-    """
-    n_len = int(len(X_input)/d)
-    print('nlen', n_len)
-    MX = lil_matrix(np.zeros(((n_len - k + 1) * nf, k * nf * d)))
-    I = eye(nf)
+    print('INside MX')
+    print(X_input.shape)
 
-    print(I.shape)
-    print(MX.shape)
+    n_len = int(X_input.size/d)
+    X = X_input.reshape(d,-1)
 
+    MX = np.zeros(((n_len - k + 1) * nf, k * nf * d))
+    I = np.eye(nf)
     mr2 = 0
     for mr in range(0, MX.shape[0], nf):
-        MX[mr:mr+nf, :] = kron(I, csr_matrix( X_input[:,mr2 : mr2 + k].flatten('F'))).tolil()
-        #MX[mr:mr + nf, :] = kron(I, csr_matrix(X_input[:, mr2: mr2 + k])).tolil()
+        MX[mr:mr+nf, :] = np.kron(I, X[:, mr2 : mr2 + k].flatten('F'))
         mr2 += 1
     return MX
 
-def makeMFMatrix(F, n_len):
-    (d, k, nf) = F.shape
-    M_filter = lil_matrix(np.zeros(((n_len - k + 1) * nf, n_len * d)))
-    Vec_filter = lil_matrix(F.reshape((d * k, nf), order='F').T)
-    # print (F.shape, Vec_filter.shape, M_filter.shape)
 
-    #M_filter = np.zeros(((n_len - k + 1) * nf, n_len * d))
-    #Vec_filter = F.reshape((d * k, nf), order='F').T
+def accuracy(P, X, labels):
+    pred = np.argmax(P, axis=0)
+    pred = [x + 1 for x in pred]
+    acc = np.count_nonzero(np.array(pred) == np.array(labels)) / X[1].size
+    return acc
 
-    for i in range(n_len - k + 1):
-        row_start = i * nf
-        row_end = (i + 1) * nf
-        col_start = d * i
-        col_end = d * i + d * k
-        M_filter[row_start:row_end, col_start:col_end] = Vec_filter
-
-    return M_filter
-
-def makeMXMatrix(x_input, d, k, nf):  # d,k,nf = size(F)
-    n_len = int(len(x_input) / d)
-    M_input = lil_matrix(np.zeros((nf * (n_len - k + 1), nf * d * k)))
-    x_input = lil_matrix(x_input.reshape((d, n_len), order='F'))
-
-    #M_input = np.zeros((nf * (n_len - k + 1), nf * d * k))
-    #x_input = x_input.reshape((d, n_len), order='F')
-
-    for i in range((n_len - k + 1)):
-        row_start = i * nf
-        vec = (x_input[:, i:k + i].reshape((d * k, 1), order='F')).T
-        for j in range(nf):
-            M_input[row_start + j, j * d * k: (j + 1) * d * k] = vec
-
-    return M_input
-
-def softmax(s):
-    f = np.exp(s - np.max(s))  # avoiding nan for large numbers
-    return f / f.sum(axis=0)
-
-# TODO
-def accuracy():
-    return 0
-
-# TODO
-def confusion_matrix(P,X, MFs, W, y ):
+def confusion_matrix(P, y):
     pred = np.argmax(P, axis=0)
     pred = [x + 1 for x in pred]
     y_actu = pd.Series(y, name='Actual')
@@ -205,7 +115,7 @@ def confusion_matrix(P,X, MFs, W, y ):
     display(df_confusion)
 
 class ConvNet:
-    def __init__(self, bs=10,  n1=20, k1=5, n2=20, k2=3,
+    def __init__(self, bs,  n1=20, k1=5, n2=20, k2=3,
                  eta = args.learning_rate, rho = args.momentum):
         self.bs = bs
 
@@ -239,89 +149,62 @@ class ConvNet:
         self.R2 = np.zeros((self.n1, self.k2, self.n2))
         self.RW = np.zeros((self.K, self.fsize))
 
-    def apply_conv_layer(self, X, F, idx, n_len):
-        MF = csr_matrix(makeMFMatrix(F, n_len))
-        #MF = makeMFMatrix(F, n_len)
-        #print('dimensions must match')
-        #print(MF.shape)
-        #print(X.shape)
-
-        #plt.spy(MF)
-        #plt.show()
-
-        X_deliv = (MF.tocsr().dot(X.tocsr())).maximum(0)
-        #X_deliv = np.maximum(0,np.dot(MF,X))
-        #for i in range(1, idx):
-        #    print(i)
-        #    tmp = (MF.tocsr().dot(X.tocsr())).maximum(0)
-            #tmp = np.maximum(0,np.dot(MF,X))
-        #    plt.spy(tmp.toarray())
-        #    plt.show()
-        #    X_deliv = sp.hstack((X_deliv.tocsr(), tmp.tocsr())).tolil()
-            #X_deliv = np.hstack((X_deliv,tmp))
-            #plt.spy(X_deliv)
-            #plt.show()
+    def apply_conv_layer(self, X, F, n_len):
+        MF = makeMFMatrix(F, n_len)
+        X_deliv = np.maximum(np.matmul(MF,X),0)
         return X_deliv
 
     def forward(self, X):
-        #print(X.shape)
-        #print(self.F1.shape)
-        X1_batch = self.apply_conv_layer(X, F = self.F1, idx = self.n1, n_len = self.n_len)
-        print('X1 plot')
-        #plt.spy(X1_batch)
-        #plt.show()
-        #print(X1_batch.shape)
-        #print(self.F2.shape)
-        X2_batch = self.apply_conv_layer(X = X1_batch, F = self.F2, idx = self.n2, n_len = self.n_len1)
-        print('X2 plot')
-        #plt.spy(X2_batch)
-        #plt.show()
-
-        #s_batch = np.matmul(self.W, X2_batch.flatten())
-
-        print('debug dims')
-        print(self.W.shape)
-        print(X2_batch.shape)
-        s_batch = np.matmul(self.W, X2_batch.toarray())
-
-
-        #plt.spy(s_batch)
-        #plt.show()
+        X1_batch = self.apply_conv_layer(X, F = self.F1, n_len = self.n_len)
+        X2_batch = self.apply_conv_layer(X = X1_batch, F = self.F2, n_len = self.n_len1)
+        s_batch = np.matmul(self.W,X2_batch)
         return softmax(s_batch), s_batch, X1_batch, X2_batch
 
     def grads(self,X,Y):
         P_batch, _, X1_batch, X2_batch = self.forward(X)
 
-        print('debug grads')
+        print('first and foremost')
         print(P_batch.shape)
-        print(Y.shape)
+        print(X1_batch.shape)
+        print(X2_batch.shape)
+
+        print('debug grads')
 
         G_batch = -(Y - P_batch)
         self.dL_dW = (1/self.bs) * np.matmul(G_batch, X2_batch.T)
-        MF2 = MakeMFMatrix(F = self.F2, n_len = self.n_len2)
+        MF2 = makeMFMatrix(F = self.F2, n_len = self.n_len1)
 
         G_batch2 = np.matmul(self.W.T, G_batch)
         G_batch2 = G_batch2 * (X2_batch > 0)
+
+        v2 = 0
+        for j in range(self.bs):
+            g_j2 = G_batch2[:, j]
+            x_j = X1_batch[:, j]
+            MX_j_2 = makeMXMatrix(x_j, d = self.n1, k = self.k2, nf = self.n2)
+            v2 += np.matmul(g_j2.T, MX_j_2)
+        print('v2 shape')
+        print(v2.shape)
+        self.dL_dF2 += (1 / self.bs) * v2.reshape(self.n1, self.k2, self.n2)
+
+        print(MF2.T.shape)
+        print(G_batch2.shape)
+
         G_batch1 = np.matmul(MF2.T, G_batch2)
         G_batch1 = G_batch1 * (X1_batch > 0)
 
-        v2 = 0
         v1 = 0
-        for j in range(Y.shape[0]):
-            g_j2 = G_batch2[:, j]
+        for j in range(self.bs):
             g_j1 = G_batch1[:, j]
             x_j = X[:, j]
-            MX_j_2 = makeMXMatrix(x_j, d = self.d, k = self.k2, nf = self.n2)
-            v2 += np.matmul(g_j2.T, MX_j_2)
             MX_j_1 = makeMXMatrix(x_j, d = self.d, k = self.k1, nf = self.n1)
             v1 += np.matmul(g_j1.T, MX_j_1)
-        self.dL_dF2 += (1 / Y.shape[0]) * v2
-        self.dL_dF1 += (1 / Y.shape[0]) * v1
+        self.dL_dF1 += (1 / self.bs) * v1.reshape(self.d, self.k1, self.n1)
 
     def backward(self):
-        self.R1 = self.rho*self.R1 -self.eta*self.dL_dF1
-        self.R2 = self.rho*self.R2 -self.eta*self.dL_dF2
-        self.RW = self.rho*self.RW -self.eta*self.dL_dW
+        self.R1 = self.rho*self.R1 - self.eta*self.dL_dF1
+        self.R2 = self.rho*self.R2 - self.eta*self.dL_dF2
+        self.RW = self.rho*self.RW - self.eta*self.dL_dW
         self.F1 += self.R1
         self.F2 += self.R2
         self.W += self.RW
@@ -334,19 +217,29 @@ class ConvNet:
     def sample_training(self):
         return 0
 
+def gen_Batches(n_batch, X, Y):
+    n = X[1].size
+    X_batches = []
+    Y_batches = []
+    batch_index = []
+    for j in range(int(n / n_batch)):
+        j_start = j * n_batch
+        j_end = (j + 1) * n_batch
+        X_batch = X[:, j_start:j_end]
+        Y_batch = Y[:, j_start:j_end]
+        X_batches.append(X_batch)
+        Y_batches.append(Y_batch)
+        batch_index.append((j_start, j_end))
+    return X_batches, Y_batches, batch_index
+
 if __name__ == '__main__':
-
     os.chdir(args.direc)
-
+    validation_data = "Validation_Inds.txt"
+    validation = np.loadtxt(validation_data, unpack=False)
     names = loadmat('assignment3_names.mat')
     all_names = names['all_names']
     ys = names['ys'] - 1
-
-    #Ys = lil_matrix(OneHotEncoder(ys))
     Ys = OneHotEncoder(ys)
-
-    validation_data = "Validation_Inds.txt"
-    validation = np.loadtxt(validation_data, unpack=False)
 
     names_train = []
     names_val = []
@@ -360,60 +253,41 @@ if __name__ == '__main__':
         else:
             names_train.append(all_names[0,i][0])
             labels_train.append(ys[i,0])
-
     C = sorted(set([i for ele in names_train for i in ele]))
     char_to_ind = {val: id for id, val in enumerate(C)}
 
     ### Data
-    X_train = lil_matrix(createOneHot_X(names_train))
-    X_val = lil_matrix(createOneHot_X(names_val))
+    # 3416 = 122x28
+    X_train = createOneHot_X(names_train)
+    X_val = createOneHot_X(names_val)
+    Ys_train = createOneHot_Y(labels_train).T
+    Ys_val = createOneHot_Y(labels_val).T
 
-    #Ys_train = lil_matrix(OneHotEncoder(labels_train)).T
-    #Ys_val = lil_matrix(OneHotEncoder(labels_val)).T
+    X_batches, Ys_batches, batch_index = gen_Batches(n_batch=args.bs, X=X_train, Y=Ys_train)
 
-    Ys_train = lil_matrix(createOneHot_Y(labels_train)).T
-    Ys_val = lil_matrix(createOneHot_Y(labels_val)).T
-
-    #X_train = createOneHot_X(names_train)
-    #X_val = createOneHot_X(names_val)
-
-    #Ys_train = OneHotEncoder(labels_train).T
-    #Ys_val = OneHotEncoder(labels_val).T
-
-    # Shapes
-    print('')
-    print('Shapes:')
-    print(X_train.shape)
-    print(X_val.shape)
-
-    print(Ys_train.shape)
-    print(Ys_val.shape)
-    print('')
-
-    MODEL = ConvNet()
+    MODEL = ConvNet(bs=args.bs)
 
     ### TRAIN
     for e in range(1, args.training_updates + 1):
         print(' ')
         print('Epoch: ', e)
+        for b in range(len(batch_index)):
+            print(' ')
+            print('Batch number: ', b)
 
-        #plt.spy(X_train)
-        #plt.show()
-        #plt.spy(Ys_train)
-        #plt.show()
+            print('check 1')
+            print(X_batches[b].shape)
+            MODEL.forward(X=X_batches[b])
+            print('check 2')
+            MODEL.grads(X=X_batches[b],Y=Ys_batches[b])
 
-        print('check 1')
-        MODEL.forward(X=X_train)
-        print('check 2')
-        MODEL.grads(X=X_train,Y=Ys_train)
+            print('debug grads')
 
-        print('debug grads')
+            MF = makeMFMatrix(MODEL.F, MODEL.n_len)
+            g_real, _ = num_grads(X_train, Ys_train, MF, h=1e-2)
 
-        MF = MakeMFMatrix(MODEL.F, MODEL.n_len)
-        g_real, _ = num_grads(X_train, Ys_train, MF, h=1e-2)
-
-        print(MODEL.dL_dW.shape)
-        print(g_real.shape)
+            print(MODEL.dL_dW.shape)
+            print(g_real.shape)
 
 
 
