@@ -14,14 +14,14 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 parser = argparse.ArgumentParser(description = 'Assignment_3_DD2424_option_2')
-parser.add_argument('--training_updates', type = int, default = 2, metavar = 'N', help = '')
+parser.add_argument('--training_updates', type = int, default = 20, metavar = 'N', help = '')
 parser.add_argument('--learning_rate', type = float, default = 0.001, metavar = 'N', help = '')
 parser.add_argument('--momentum', type = float, default = 0.9, metavar = 'N', help = '')
 parser.add_argument('--n1', type = int, default = 1, metavar = 'N', help = '')
 parser.add_argument('--n2', type = int, default = 1, metavar = 'N', help = '')
 parser.add_argument('--k1', type = int, default = 1, metavar = 'N', help = '')
 parser.add_argument('--k2', type = int, default = 1, metavar = 'N', help = '')
-parser.add_argument('--bs', type = int, default = 1, metavar = 'N', help = '')
+parser.add_argument('--bs', type = int, default = 38, metavar = 'N', help = '')
 parser.add_argument('--direc', type = str, default = '/home/firedragon/Desktop/ACADEMIC/DD2424/A3/',
                     metavar = 'N', help = 'RAW DATABASE DIR')
 args = parser.parse_args()
@@ -51,6 +51,7 @@ def makeMFMatrix(F, n_len):
         M_filter[i * nf : (i + 1) * nf, d * i : d * i + d * k] = Vec_filter
     return M_filter
 
+'''
 def makeMXMatrix(X_input, d, k, nf):
     n_len = int(X_input.size/d)
     X = X_input.reshape(d,-1)
@@ -61,15 +62,24 @@ def makeMXMatrix(X_input, d, k, nf):
         MX[mr:mr+nf, :] = np.kron(I, X[:, mr2 : mr2 + k].flatten('F'))
         mr2 += 1
     return MX
+'''
 
-def accuracy(P, X, labels):
-    pred = np.argmax(P, axis=0)
-    pred = [x + 1 for x in pred]
-    acc = np.count_nonzero(np.array(pred) == np.array(labels)) / X[1].size
-    return acc
+def makeMXMatrix(x_input, d, k, nf):  # d,k,nf = size(F)
+    n_len = int(len(x_input) / d)
+    M_input = np.zeros((nf * (n_len - k + 1), nf * d * k))
+    x_input = x_input.reshape((d, n_len), order='F')
+    for i in range((n_len - k + 1)):
+        row_start = i * nf
+        vec = (x_input[:, i:k + i].reshape((d * k, 1), order='F')).T
+        for j in range(nf):
+            M_input[row_start + j, j * d * k: (j + 1) * d * k] = vec
+    return M_input
 
-def ComputeLoss(P,Y):
-    return -np.log(np.matmul(Y.T,P))
+def accuracy(P, y):
+    return np.sum(np.argmax(P)==y) / len(y)
+
+def ComputeLoss(P,Y,bs):
+    return -np.sum(np.log(np.matmul(Y.T,P))) / bs
 
 def confusion_matrix(P, y):
     pred = np.argmax(P, axis=0)
@@ -112,9 +122,9 @@ class ConvNet:
         self.dL_dF2 = np.zeros((self.n1, self.k2, self.n2))
         self.dL_dW = np.zeros((self.K, self.fsize))
 
-        self.R1 = self.F1
-        self.R2 = self.F2
-        self.RW = self.W
+        self.R1 = np.zeros((self.d, self.k1, self.n1))
+        self.R2 = np.zeros((self.n1, self.k2, self.n2))
+        self.RW = np.zeros((self.K, self.fsize))
 
     def apply_conv_layer(self, X, F, n_len):
         MF = makeMFMatrix(F, n_len)
@@ -122,39 +132,44 @@ class ConvNet:
         return X_deliv
 
     def forward(self, X):
-        X1_batch = self.apply_conv_layer(X, F = self.F1, n_len = self.n_len)
+        #print('')
+        #print('forward')
+
+        X1_batch = self.apply_conv_layer(X = X, F = self.F1, n_len = self.n_len)
         X2_batch = self.apply_conv_layer(X = X1_batch, F = self.F2, n_len = self.n_len1)
-        s_batch = np.matmul(self.W,X2_batch)
+        s_batch = np.matmul(self.W, X2_batch)
+        '''
+        print(X.shape)
+        print(X1_batch.shape)
+        print(X2_batch.shape)
+        print(s_batch.shape)
+        print('')
+        '''
         return softmax(s_batch), s_batch, X1_batch, X2_batch
 
-    def compute_grads(self,X,Y):
-        P_batch, _, X1_batch, X2_batch = self.forward(X)
+    def compute_grads(self, X, Y, P_batch, X1_batch, X2_batch):
+
+        print('debug grads')
 
         G_batch = -(Y - P_batch)
-        self.dL_dW = (1/self.bs) * np.matmul(G_batch, X2_batch.T)
+        self.dL_dW = (1/ X2_batch.shape[1]) * np.matmul(G_batch, X2_batch.T)
         MF2 = makeMFMatrix(F = self.F2, n_len = self.n_len1)
 
-        G_batch2 = np.matmul(self.W.T, G_batch)
-        G_batch2 = G_batch2 * (X2_batch > 0)
+        G_batch = np.matmul(self.W.T, G_batch) * np.where(X2_batch > 0,1,0) # altern: use np.where
 
         v2 = 0
-        for j in range(self.bs):
-            g_j2 = G_batch2[:, j]
-            x_j = X1_batch[:, j]
-            MX_j_2 = makeMXMatrix(x_j, d = self.n1, k = self.k2, nf = self.n2)
-            v2 += np.matmul(g_j2.T, MX_j_2)
-        self.dL_dF2 += (1 / self.bs) * v2.reshape(self.n1, self.k2, self.n2)
+        for j in range(X1_batch.shape[1]):
+            MX_j_2 = makeMXMatrix(X1_batch[:, j], d = self.n1, k = self.k2, nf = self.n2)
+            v2 += np.matmul(G_batch[:, j].T, MX_j_2)
+        self.dL_dF2 += v2.reshape(self.n1, self.k2, self.n2) / X1_batch.shape[1]
 
-        G_batch1 = np.matmul(MF2.T, G_batch2)
-        G_batch1 = G_batch1 * (X1_batch > 0)
+        G_batch = np.matmul(MF2.T, G_batch) * np.where(X1_batch > 0,1,0)
 
         v1 = 0
-        for j in range(self.bs):
-            g_j1 = G_batch1[:, j]
-            x_j = X[:, j]
-            MX_j_1 = makeMXMatrix(x_j, d = self.d, k = self.k1, nf = self.n1)
-            v1 += np.matmul(g_j1.T, MX_j_1)
-        self.dL_dF1 += (1 / self.bs) * v1.reshape(self.d, self.k1, self.n1)
+        for j in range(X.shape[1]):
+            MX_j_1 = makeMXMatrix(X[:, j], d = self.d, k = self.k1, nf = self.n1)
+            v1 += np.matmul(G_batch[:, j].T, MX_j_1)
+        self.dL_dF1 += v1.reshape(self.d, self.k1, self.n1) / X.shape[1]
 
     def backward(self):
         self.R1 = self.rho*self.R1 - self.eta*self.dL_dF1
@@ -183,17 +198,33 @@ def gen_Batches(n_batch, X, Y):
         batch_index.append((j_start, j_end))
     return X_batches, Y_batches, batch_index
 
-def num_grads(X, Y, MF, F, h, W, cost, n_conv, len_f):
+def ComputeLoss_debugversion(W, F1, F2, Y, X, model):
+    model.W = W
+    model.F1 = F1
+    model.F2 = F2
+    P, _, _, _ = model.forward(X)
+    return -(np.sum(Y * np.log(P)))
+
+def num_grads(MF, F, h, W, n_conv, len_f, Y, X, model):
+    print('')
+    print('inside num_grads')
     dW = np.zeros_like(W)
     (a, b) = W.shape
     for i in range(a):
+        #print('i load', i/a)
         for j in range(b):
+            #print('j load', j / b)
             C = []
             for m in [-1, 1]:
                 W_try = np.copy(W)
                 W_try[i, j] += m * h
+                #print(cost)
+                cost = ComputeLoss_debugversion(W_try,F[0],F[1],Y, X, model)
                 C.append(cost)
+            #print(C)
             dW[i, j] = (C[1] - C[0]) / (2 * h)
+    print('outside num_grads')
+    '''
     dF = [np.zeros_like(f) for f in F]
     for i in range(n_conv):
         (a, b, c) = F[i].shape
@@ -210,7 +241,8 @@ def num_grads(X, Y, MF, F, h, W, cost, n_conv, len_f):
                             MF_lst.append(MFi_try if ii == i else MF[ii])
                         C.append(cost)
                     dF[i][j, k, q] = (C[1] - C[0]) / (2 * h)
-    return dW, dF
+    '''
+    return dW
 
 if __name__ == '__main__':
     os.chdir(args.direc)
@@ -243,48 +275,78 @@ if __name__ == '__main__':
     Ys_train = createOneHot_Y(labels_train).T
     Ys_val = createOneHot_Y(labels_val).T
 
+    print('Data')
+    print(labels_train)
+
+    print('Shapes')
+    print(X_train.shape)
+    print(Ys_train.shape)
+
     X_batches, Ys_batches, batch_index = gen_Batches(n_batch=args.bs, X=X_train, Y=Ys_train)
 
-    MODEL = ConvNet(bs=args.bs)
+    print(X_batches[0].shape)
+
+    MODEL = ConvNet(bs=args.bs,n1=2,k1=1,n2=2,k2=1)
 
     ### TRAIN
     Accuracy = []
     Loss = []
+
+    Accuracy_val = []
+    Loss_val = []
+
     epochs = [e for e in range(1, args.training_updates + 1)]
     for e in range(1, args.training_updates + 1):
-        print(' ')
+        print('')
         print('Epoch: ', e)
         print('Total Batches: ', len(batch_index))
         for b in range(len(batch_index)):
-            print(' ')
+            print('')
             print('Batch number: ', b)
-            P, _, _, _ = MODEL.forward(X = X_batches[b])
-            MODEL.compute_grads(X = X_batches[b], Y = Ys_batches[b])
+            P, _, X1_batch, X2_batch = MODEL.forward(X = X_batches[b])
+            #P_val, _, _, _ = MODEL.forward(X=X_val)
+            MODEL.compute_grads(X = X_batches[b],
+                                Y = Ys_batches[b],
+                                P_batch = P,
+                                X1_batch = X1_batch,
+                                X2_batch = X2_batch)
             MODEL.backward()
 
-            Accuracy.append(accuracy(P, X_batches[b], labels_train))
-            Loss.append(ComputeLoss(P, Ys_batches[b]))
+            Accuracy.append(accuracy(P, labels_train))
+            Loss.append(ComputeLoss(P, Ys_batches[b], args.bs))
 
+            #Accuracy_val.append(accuracy(P_val, X_val, labels_val))
+            #Loss_val.append(ComputeLoss(P_val, Ys_val))
+
+            '''
             MF1 = makeMFMatrix(MODEL.F[0], MODEL.n_len)
             MF2 = makeMFMatrix(MODEL.F[1], MODEL.n_len)
-            g_real, df_real = num_grads(X = X_train, Y = Ys_train,
-                                  MF = (MF1, MF2), F = (MODEL.F[0],MODEL.F[1]),
-                                  h = 1e-06, W = MODEL.W,
-                                  cost = Loss[b], n_conv = 2, len_f = (MODEL.n_len,MODEL.n_len1))
-
+            g_real = num_grads(MF = (MF1, MF2),
+                                        F = (MODEL.F[0], MODEL.F[1]),
+                                        h = 1e-06,
+                                        W = MODEL.W,
+                                        n_conv = 2,
+                                        len_f = (MODEL.n_len, MODEL.n_len1),
+                                        Y = Ys_batches[b],
+                                        X = X_batches[b],
+                                        model = MODEL)
+            
             print('maximum rel error grad W: ', np.max(
-                np.abs(g_real-MODEL.dL_dW) / np.maximum(np.full(g_real.shape,1e-06),
+                np.abs(g_real-MODEL.dL_dW) / np.maximum(np.full(g_real.shape,1e-10),
                                                       np.abs(g_real)+np.abs(MODEL.dL_dW))))
-            print('maximum rel error grad F2: ', np.max(
-                np.abs(df_real[1] - MODEL.dL_dF2) / np.maximum(np.full(df_real[1].shape, 1e-06),
-                                                          np.abs(df_real[1]) + np.abs(MODEL.dL_dF2))))
+            '''
+            #print('maximum rel error grad F2: ', np.max(
+            #    np.abs(df_real[1] - MODEL.dL_dF2) / np.maximum(np.full(df_real[1].shape, 1e-06),
+            #                                              np.abs(df_real[1]) + np.abs(MODEL.dL_dF2))))
 
     plt.figure()
-    plt.plot(epochs, Loss)
+    plt.plot(Loss)
+    #plt.plot(epochs, Loss_val)
     plt.show()
 
     plt.figure()
-    plt.plot(epochs, Accuracy)
+    plt.plot(Accuracy)
+    #plt.plot(epochs, Accuracy_val)
     plt.show()
 
 
